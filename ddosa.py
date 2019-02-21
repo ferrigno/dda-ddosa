@@ -1157,6 +1157,7 @@ class ImageBins(DataAnalysis):
         else:
             self.bins=self.ebins
 
+        # I remove the fractional part 
         for e1,e2 in self.bins:
             if abs(round(e1*2)/2. - e1)>1e-5 or abs(round(e2*2)/2. - e2)>1e-5:
                 raise FractionalEnergyBinsNotAllowed()
