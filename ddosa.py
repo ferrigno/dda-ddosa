@@ -1823,6 +1823,36 @@ class GRcat(DataAnalysis):
         if not os.path.exists(self.cat):
             raise RuntimeError(f"isdc ref cat not found: {self.cat}, searched in rbp {detect_rbp()}")
 
+class OMCcat(DataAnalysis):
+    input_ic = ICRoot
+
+    suffix = None
+
+    cached = False
+
+    omccat_version = 5
+
+    def get_version(self):
+        v =self.get_signature()+"."+self.version + f".{self.moccat_version:04d}"
+        return v
+
+    def main(self):
+        refcatvar = os.environ.get("ISDC_OMC_CAT", None)
+
+        if refcatvar:
+            print(f"\033[31mWARNING: ISDC_OMC_CAT env variable is set to {refcatvar}, but it will be ignored \033[0m")
+            print(f"\033[31mWARNING: we refuse to rely on volatile environment to define analysis.  \033[0m")
+            print(f"\033[31mWARNING: trying to do so in the past caused immesurable suffering  \033[0m")
+
+        self.cat = os.path.join(detect_rbp(),
+                                f"cat/omc_refr_cat_{self.omccat_version:04d}{'_'+self.suffix if self.suffix else ''}.fits")
+
+        print("using omccat:", self.cat)
+
+        if not os.path.exists(self.cat):
+            raise RuntimeError(f"isdc OMC ref cat not found: {self.cat}, searched in rbp {detect_rbp()}")
+
+
 class BrightCat(DataAnalysis):
     input=GRcat
     #input_selection="flag5"
