@@ -52,6 +52,26 @@ import ast
 import copy
 import json
 import re
+import traceback
+
+
+try:
+    import sentry_sdk
+    sentry_sdk.init(
+        dsn="https://729c8672d2764026a313e83b8feb4b9c@sentry.obsuks1.unige.ch/2",
+
+        # Set traces_sample_rate to 1.0 to capture 100%
+        # of transactions for performance monitoring.
+        # We recommend adjusting this value in production.
+        traces_sample_rate=1.0
+    )
+    print("sentry found!")
+except Exception as e:
+    print("no sentry!", e)
+    traceback.print_exc()
+    
+
+#raise NotImplementedError
 
 try:
     import pandas as pd
@@ -571,6 +591,8 @@ class DataAnalysis(DataAnalysisPrototype):
 
     input_osatools=get_OSA_tools()
 
+    #input_osa_version=os.getenv("OSA_VERSION", da.NoAnalysis)
+
     cached=False
 
     def get_scw(self):
@@ -605,14 +627,24 @@ class DataAnalysis(DataAnalysisPrototype):
 
         print("\n\033[32mall involved scws:", involved_scws, "\033[0m\n")
 
+        remaining_scw = []
+
         for scw in involved_scws:
-            if int(scw).endswith(".000"):
-                return True
+            scw = scw.strip("[]")
+            if scw.endswith(".000"):
+                if "2588" in scw:
+                    # exception for temporarily lost data
+                    pass
+                else:
+                    return True
+
+            remaining_scw.append(scw)
+
 
             #if int(scw.strip("[]")[:4]) > 2500:
             #    return True
 
-        if len(involved_scws) == 0:
+        if len(remaining_scw) == 0:
             return True
         else:
             return False
@@ -704,6 +736,9 @@ class BinnedMapsNotComputed(Exception):
     pass
 
 class IncompatibleIISpectraExtract(Exception):
+    pass
+
+class IILCExtractBug(AnalysisException):
     pass
 
 def good_file(fn):
@@ -963,6 +998,8 @@ class Rev4ScW(Revolution):
         revid=self.input_scw.input_scwid.handle[:4]
         print("revolution id for scw:",revid)
         return revid
+
+
 
 class ICRoot(DataAnalysis):
     cached=False
@@ -1863,7 +1900,12 @@ class BrightCat(DataAnalysis):
     def main(self):
         #self.cat=self.input.cat+"[ISGRI_FLAG2==5]"
         #self.cat=self.input.cat+"[ISGRI_FLAG2==5]"
-        self.cat_path=self.input.cat+"[ISGRI_FLAG2==5&&ISGR_FLUX_1>100]"
+
+        localized_cat = os.path.basename(self.input.cat) + ".local"
+
+        shutil.copy(self.input.cat, localized_cat)
+        
+        self.cat_path = localized_cat + "[ISGRI_FLAG2==5&&ISGR_FLUX_1>100]"
 
         fn="very_bright_cat.fits"
 
@@ -2244,7 +2286,7 @@ class CatExtract(DataAnalysis):
             f[1].data=t_new.data
 
             fn="isgri_catalog_extra.fits"
-            f.writeto(fn,clobber=True)
+            f.writeto(fn,overwrite=True)
 
         print("storing cat as",fn)
         self.cat=DataFile(fn)
@@ -2823,7 +2865,7 @@ class mosaic_ii_skyimage(DataAnalysis):
         f_cat[1].data = np.concatenate((f_cat[1].data, new_sources_srcl_cat))
 
         merged_cat_fn = "merged_srcl_cat.fits"
-        f_cat.writeto(merged_cat_fn,clobber=True)
+        f_cat.writeto(merged_cat_fn,overwrite=True)
 
         return merged_cat_fn
 
@@ -2994,7 +3036,7 @@ class mosaic_ii_skyimage(DataAnalysis):
         f_cat[1].data = np.concatenate((f_cat[1].data, new_sources_srcl_cat))
 
         merged_res_fn = "merged_res.fits"
-        f_cat.writeto(merged_res_fn,clobber=True)
+        f_cat.writeto(merged_res_fn,overwrite=True)
 
         return DataFile(merged_res_fn)
 
@@ -3069,9 +3111,9 @@ class CatForSpectraFromImaging(DataAnalysis):
             f[1].data = t_new.data
 
             catfn = "isgri_catalog_extra.fits"
-            f.writeto(catfn, clobber=True)
+            f.writeto(catfn, overwrite=True)
 
-        f.writeto(catfn,clobber=True)
+        f.writeto(catfn,overwrite=True)
 
         self.cat=DataFile(catfn)
 
@@ -3333,7 +3375,30 @@ class ii_lc_extract(DataAnalysis):
         # for k in ['SearchMode','ToSearch','CleanMode','MinCatSouSnr','MinNewSouSnr','NegModels','DoPart2']: # dopart2 is flow control, separately
         #    ht[k]=getattr(self.input_imgconfig,k)
 
-        ht.run()
+
+        try:
+            ht.run()
+        except pilton.HEAToolException as e:
+            if 'members number in shd index selection .ne.' in ht.output:
+                print("detected lc issue")
+                raise IILCExtractBug()
+
+            if 'ONTIME le 0' in ht.output:
+                print("detected lc issue")
+                raise IILCExtractBug('ILCONTIMEle')
+            
+            if 'SIGBUS: Access to an undefined portion of a memory object' in ht.output:
+                print("detected lc issue")
+                raise IILCExtractBug('segbus')
+
+            if 'Error in F04ASF - matrix AtA not pos.def' in ht.output:
+                print("detected lc issue")
+                raise IILCExtractBug('probably too many sources')
+
+            raise
+
+        if 'On entry to DGETRF parameter number  4 had an illegal value' in ht.output:
+            raise IILCExtractBug('DGETRF parameter number had an illegal value')
 
         self.lightcurve = DataFile(lc_fn)
 
@@ -3519,7 +3584,7 @@ def construct_empty_shadidx(bins,fn="og.fits",levl="BIN_I"):
         og[2+i].header['E_MIN']=e1
         og[2+i].header['E_MAX']=e2
         og[2+i].header['ISDCLEVL']=levl
-    og.writeto(fn,clobber=True)
+    og.writeto(fn,overwrite=True)
 
 #class AnyScW(da.AnyAnalysis):
 #    pass
@@ -3706,6 +3771,23 @@ def fromUTC(utc):
     return d
 
 
+
+class LongScWListForScW(DataAnalysis):
+    input_scw=ScWData
+    allow_alias=True
+
+    def main(self):
+        # self.input_scw.get_t1_t2()
+        self.scwlistdata = [ScWData(input_scwid="066500110010.001"), ScWData(input_scwid="066500120010.001")]
+
+class LongImageGroupsForScW(ImageGroups):
+    input_scwlist=LongScWListForScW
+
+class LongMosaicForScW(mosaic_ii_skyimage):
+    input_imagegroups=LongImageGroupsForScW
+
+
+
 import dataanalysis.callback
 
 previously_accepted_classes=dataanalysis.callback.default_callback_filter.callback_accepted_classes
@@ -3743,4 +3825,5 @@ if previously_accepted_classes is not None:
     dataanalysis.callback.default_callback_filter.set_callback_accepted_classes(previously_accepted_classes)
 
 dataanalysis.callback.default_callback_filter.set_callback_accepted_classes([mosaic_ii_skyimage, ISGRIImagePack, ii_skyimage, BinEventsImage, ibis_gti, ibis_dead, ISGRIEvents, ii_spectra_extract, BinEventsSpectra, ii_lc_extract, BinEventsLC, lc_pick])
+
 
